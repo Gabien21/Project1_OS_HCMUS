@@ -1,96 +1,5 @@
-from itertools import chain
 import re
-
-
-class Entry:
-    def __init__(self, data):
-        self.subentry = self.deleted = self.empty = self.label = False
-        self.size = 0
-        self.ext = b""
-        self.long_name = ""
-        self.entry_data = data
-        self.attribute = data[11:12]
-        if self.attribute == b'\x0f':
-            self.subentry = True
-        if not self.subentry:
-            self.name = self.entry_data[:8]
-            self.ext = self.entry_data[8:11]
-            first_byte = self.name[:1]
-            if first_byte == b'\xe5':
-                self.deleted = True
-            else:
-                if first_byte == b'\x00':
-                    self.empty = True
-                    self.name = ""
-                    return
-            if self.attribute == b"\x08":
-                self.label = True
-                return
-            self.start_cluster = int.from_bytes(self.entry_data[0x1A:0x1C][::-1],
-                                                byteorder='big')
-            self.size = int.from_bytes(self.entry_data[0x1C:0x20], byteorder='little')
-        else:
-            self.index = self.entry_data[0]
-            self.name = b""
-            for i in chain(range(1, 11), range(14, 26), range(28, 32)):
-                self.name += int.to_bytes(self.entry_data[i], 1, byteorder='little')
-                if self.name.endswith(b"\xff\xff"):
-                    self.name = self.name[:-2]
-                    break
-            self.name = self.name.decode('utf-16le').strip('\x00')
-
-    def is_active_entry(self):
-        if self.empty or self.subentry or self.deleted or self.label or (self.attribute == b"\x16"):
-            return False
-        return True
-
-    def is_directory(self):
-        if self.attribute == b"\x10":
-            return True
-        return False
-
-    def is_archive(self):
-        if self.attribute == b"0x20":
-            return True
-        return False
-
-
-class RDET:
-    def __init__(self, data: bytes) -> None:
-        self.REDET_data: bytes = data
-        self.entries = []
-        long_name = ""
-        for i in range(0, len(data), 32):
-            one_entry = self.REDET_data[i: i + 32]
-            self.entries.append(Entry(one_entry))
-            if self.entries[-1].empty or self.entries[-1].deleted:
-                long_name = ""
-                continue
-            if not self.entries[-1].subentry:
-                if long_name != "":
-                    self.entries[-1].long_name = long_name
-                else:
-                    extend = self.entries[-1].ext.strip().decode()
-                    if extend == "":
-                        self.entries[-1].long_name = self.entries[-1].name.strip().decode()
-                    else:
-                        self.entries[-1].long_name = self.entries[-1].name.strip().decode() + "." + extend
-                long_name = ""
-            else:
-                long_name = self.entries[-1].name + long_name
-
-    def get_active_entries(self) -> 'list[Entry]':
-        entry_list = []
-        for i in range(len(self.entries)):
-            if self.entries[i].is_active_entry():
-                entry_list.append(self.entries[i])
-        return entry_list
-
-    def find_entry(self, name) -> Entry:
-        for i in range(len(self.entries)):
-            if self.entries[i].is_active_entry() and self.entries[i].long_name.lower() == name.lower():
-                return self.entries[i]
-        return None
+from RDET import RDET
 
 
 class FAT32:
@@ -201,18 +110,89 @@ class FAT32:
         self.boot_sector["Boot Record Signature"] = hex( int.from_bytes(self.boot_sector_raw[0x1FE:0x200], byteorder='little'))
         self.boot_sector['Starting Sector of Data'] = self.boot_sector["Reserved Sectors"] + self.boot_sector["Number of Copies of FAT"] * self.boot_sector["Number of Sectors Per FAT"]
 
-    def __offset_from_cluster(self, index):
-        return self.SB + self.SF * self.NF + (index - 2) * self.SC
-
     def get_all_cluster_data(self, cluster_index):
         index_list = self.get_cluster_chain(cluster_index)
         data = b""
         for i in index_list:
-            off = self.__offset_from_cluster(i)
+            off = self.SB + self.SF * self.NF + (i - 2) * self.SC
             self.fd.seek(off * self.BS)
             data += self.fd.read(self.SC * self.BS)
         with open('Dataa.dat', 'wb') as file:
             file.write(data)
+        return data
+
+    def move_directory(self, path=""):
+        if path == "":
+            raise Exception("Path to directory is required!")
+        self.RDET = self.get_SDET(path)
+
+        dirs = re.sub(r"[/\\]+", r"\\", path).strip("\\").split("\\")
+        if dirs[0] == self.name:
+            self.cwd.clear()
+            self.cwd.append(self.name)
+            dirs.pop(0)
+
+    def get_SDET(self, dir) -> RDET:
+        dirs = re.sub(r"[/\\]+", r"\\", dir).strip("\\").split("\\")
+        if dirs[0] == self.name:
+            cdet = self.DET[self.boot_sector["Cluster Number of the Start of the Root Directory"]]
+            dirs.pop(0)
+        else:
+            cdet = self.RDET
+        for d in dirs:
+            entry = cdet.find_entry_by_name(d)
+            if entry is None:
+                raise Exception("Directory not found!")
+            if entry.attribute == b"\x10":
+                if entry.start_cluster == 0:
+                    continue
+                cdet = self.DET[entry.start_cluster] = RDET(self.get_all_cluster_data(entry.start_cluster))
+            else:
+                raise Exception("Not a directory")
+        return cdet
+
+    def get_directory_info(self, dir=""):
+        try:
+            if dir != "":
+                cdet = self.get_SDET(dir)
+                entry_list = cdet.get_main_entries()
+            else:
+                entry_list = self.RDET.get_main_entries()
+            ret = []
+            for entry in entry_list:
+                obj = {}
+                obj["Flags"] = entry.attribute
+                obj["Size"] = entry.size
+                obj["Name"] = entry.name
+                if entry.start_cluster == 0:
+                    obj["Sector"] = (entry.start_cluster + 2) * self.SC
+                else:
+                    obj["Sector"] = entry.start_cluster * self.SC
+                ret.append(obj)
+            return ret
+        except Exception as e:
+            raise (e)
+
+    def get_data_txt_file(self, path: str) -> str:
+        path = re.sub(r"[/\\]+", r"\\", path).strip("\\").split("\\")
+        if len(path) > 1:
+            name = path[-1]
+            path = "\\".join(path[:-1])
+            cdet = self.get_SDET(path)
+            entry = cdet.find_entry_by_name(name)
+        else:
+            entry = self.RDET.find_entry_by_name(path[0])
+        index_list = self.get_cluster_chain(entry.start_cluster)
+        data = ""
+        size_left = entry.size
+        for i in index_list:
+            if size_left <= 0:
+                break
+            off = self.SB + self.SF * self.NF + (i - 2) * self.SC
+            self.fd.seek(off * self.BS)
+            raw_data = self.fd.read(min(self.SC * self.BS, size_left))
+            size_left -= self.SC * self.BS
+            data += raw_data.decode()
         return data
 
     def __str__(self) -> str:
@@ -223,82 +203,65 @@ class FAT32:
             s += f"{key}: {self.boot_sector[key]}\n"
         return s
 
-    def get_cwd(self):
-        if len(self.cwd) == 1:
-            return self.cwd[0] + "\\"
-        return "\\".join(self.cwd)
 
-    def change_dir(self, path=""):
-        if path == "":
-            raise Exception("Path to directory is required!")
-        cdet = self.visit_dir(path)
-        self.RDET = cdet
+def print_tree(vol, entry, prefix="", last=False):
+    print(prefix + ("|_" if last else "|") + entry["Name"])
+    if entry["Flags"] == b"\x20":
+        return
 
-        dirs = self.__parse_path(path)
-        if dirs[0] == self.name:
-            self.cwd.clear()
-            self.cwd.append(self.name)
-            dirs.pop(0)
-        for d in dirs:
-            if d == "..":
-                self.cwd.pop()
-            elif d != ".":
-                self.cwd.append(d)
+    vol.move_directory(entry["Name"])
+    entries = vol.get_directory_info()
+    l = len(entries)
+    for i in range(l):
+        if entries[i]["Name"] in (".", ".."):
+            continue
+        prefix_char = "   " if last else "|  "
+        print_tree(vol, entries[i], prefix + prefix_char, i == l - 1)
+    vol.move_directory("..")
 
-    def visit_dir(self, dir) -> RDET:
-        if dir == "":
-            raise Exception("Directory name is required!")
-        dirs = self.__parse_path(dir)
 
-        if dirs[0] == self.name:
-            cdet = self.DET[self.boot_sector["Cluster Number of the Start of the Root Directory"]]
-            dirs.pop(0)
+def display_tree(vol, arg):
+    cwd = (vol.cwd[0] + "\\") if len(vol.cwd) == 1 else "\\".join(vol.cwd)
+    try:
+        if arg != "":
+            vol.move_directory(arg)
+            print((vol.cwd[0] + "\\") if len(vol.cwd) == 1 else "\\".join(vol.cwd))
         else:
-            cdet = self.RDET
+            print(cwd)
+        entries = vol.get_directory_info()
+        l = len(entries)
+        for i in range(l):
+            if entries[i]["Name"] in (".", ".."):
+                continue
+            print_tree(vol, entries[i], "", i == l - 1)
+    except Exception as e:
+        print(f"[ERROR] {e}")
+    finally:
+        vol.move_directory(cwd)
 
-        for d in dirs:
-            entry = cdet.find_entry(d)
-            if entry is None:
-                raise Exception("Directory not found!")
-            if entry.is_directory():
-                if entry.start_cluster == 0:
-                    continue
-                if entry.start_cluster in self.DET:
-                    cdet = self.DET[entry.start_cluster]
-                    continue
-                self.DET[entry.start_cluster] = RDET(self.get_all_cluster_data(entry.start_cluster))
-                cdet = self.DET[entry.start_cluster]
-            else:
-                raise Exception("Not a directory")
-        return cdet
 
-    def __parse_path(self, path):
-        dirs = re.sub(r"[/\\]+", r"\\", path).strip("\\").split("\\")
-        return dirs
-
-    def get_dir(self, dir=""):
-        try:
-            if dir != "":
-                cdet = self.visit_dir(dir)
-                entry_list = cdet.get_active_entries()
-            else:
-                entry_list = self.RDET.get_active_entries()
-            ret = []
-            for entry in entry_list:
-                obj = {}
-                obj["Flags"] = entry.attribute
-                obj["Size"] = entry.size
-                obj["Name"] = entry.long_name
-                if entry.start_cluster == 0:
-                    obj["Sector"] = (entry.start_cluster + 2) * self.SC
-                else:
-                    obj["Sector"] = entry.start_cluster * self.SC
-                ret.append(obj)
-            return ret
-        except Exception as e:
-            raise (e)
-
-    def __del__(self):
-        if getattr(self, "fd", None):
-            print("Closing Volume...")
-            self.fd.close()
+def get_folder_info(vol, arg):
+    if ".txt" in arg:
+        print(vol.get_data_txt_file(arg))
+        return
+    filelist = vol.get_directory_info(arg)
+    print("Mode" + "\t\t" + "Sector" + "\t" + "Length" + "\t" + "Name")
+    for file in filelist:
+        flags = file['Flags']
+        flagstr = ""
+        if flags == b"\x01":
+            flagstr = 'ReadOnly'
+        if flags == b"\x02":
+            flagstr = 'Hidden'
+        if flags == b"\x04":
+            flagstr = 'System'
+        if flags == b"\x08":
+            flagstr = 'VolLable'
+        if flags == b"\x10":
+            flagstr = 'Directory'
+        if flags == b"\x20":
+            flagstr = 'Archive'
+        flagstr = "".join(flagstr)
+        s = "\t"
+        print(
+            f"{flagstr} \t {file['Sector']} \t {file['Size'] if file['Size'] != 0 else s} \t {file['Name']}")
