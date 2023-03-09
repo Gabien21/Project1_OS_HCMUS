@@ -1,5 +1,6 @@
 from FAT32 import FAT32, display_tree, get_folder_info
 import os
+from NTFS import NTFS
 
 if __name__ == "__main__":
     list_volume = []
@@ -18,9 +19,11 @@ if __name__ == "__main__":
     if 0 >= choice > len(list_volume):
         print("[ERROR] Invalid choice!")
         exit()
-    vol = FAT32(list_volume[choice - 1])
+    # vol = FAT32(list_volume[choice - 1])
+    vol = NTFS(list_volume[choice - 1])
     print("-----------------------------------------------------------------------------------------------------------")
     print(vol)
+    '''
     print("-----------------------------------------------------------------------------------------------------------")
     display_tree(vol, "E:\\")
     print("-----------------------------------------------------------------------------------------------------------")
@@ -29,5 +32,5 @@ if __name__ == "__main__":
     print("-----------------------------------------------------------------------------------------------------------")
     arg = input("Input path of the text file:")
     get_folder_info(vol, arg)
-
+    '''
 

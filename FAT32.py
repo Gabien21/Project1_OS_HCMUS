@@ -33,7 +33,7 @@ class FAT32:
     FAT_data = ""
     FAT_elements = []
 
-    def __init__(self, name_of_volume) -> None:
+    def __init__(self, name_of_volume):
         self.name = name_of_volume
         self.cwd = [self.name]
         self.fd = open(r'\\.\%s' % self.name, 'rb')
@@ -42,9 +42,6 @@ class FAT32:
             file.write(self.boot_sector_raw)
         self.boot_sector = {}
         self.__extract_boot_sector()
-        if self.boot_sector["FAT Name"] != b"FAT32   ":
-            raise Exception("Not FAT32")
-        self.boot_sector["FAT Name"] = self.boot_sector["FAT Name"].decode()
         self.SB = self.boot_sector["Reserved Sectors"]
         self.SF = self.boot_sector["Number of Sectors Per FAT"]
         self.NF = self.boot_sector["Number of Copies of FAT"]
@@ -100,12 +97,12 @@ class FAT32:
         self.boot_sector["Sector Number of the FileSystem Information Sector"] = int.from_bytes(self.boot_sector_raw[0x30:0x32], byteorder='little')
         self.boot_sector["Sector Number of the BackupBoot Sector"] = int.from_bytes(self.boot_sector_raw[0x32:0x34], byteorder='little')
         self.boot_sector["Reserved"] = int.from_bytes(self.boot_sector_raw[0x34:0x40], byteorder='little')
-        self.boot_sector["Logical Drive Number of Partition"] = hex( int.from_bytes(self.boot_sector_raw[0x40:0x41], byteorder='little'))
+        self.boot_sector["Logical Drive Number of Partition"] = hex(int.from_bytes(self.boot_sector_raw[0x40:0x41], byteorder='little'))
         self.boot_sector["Unused"] = int.from_bytes(self.boot_sector_raw[0x41:0x42], byteorder='little')
         self.boot_sector["Extended Signature"] = hex(int.from_bytes(self.boot_sector_raw[0x42:0x43], byteorder='little'))
         self.boot_sector["Serial Number of Partition"] = hex(int.from_bytes(self.boot_sector_raw[0x43:0x47], byteorder='little'))
         self.boot_sector["Volume Name of Partition"] = self.boot_sector_raw[0x47:0x52].decode()
-        self.boot_sector["FAT Name"] = self.boot_sector_raw[0x52:0x5A]
+        self.boot_sector["FAT Name"] = self.boot_sector_raw[0x52:0x5A].decode()
         self.boot_sector["Executable Code"] = self.boot_sector_raw[0x5A:0x1FE]
         self.boot_sector["Boot Record Signature"] = hex( int.from_bytes(self.boot_sector_raw[0x1FE:0x200], byteorder='little'))
         self.boot_sector['Starting Sector of Data'] = self.boot_sector["Reserved Sectors"] + self.boot_sector["Number of Copies of FAT"] * self.boot_sector["Number of Sectors Per FAT"]
